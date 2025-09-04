@@ -4,6 +4,7 @@
  * FILE:            ntoskrnl/lpc/send.c
  * PURPOSE:         Local Procedure Call: Sending (Requests)
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ *                  Alexander Kruglov (alex.kruglov@mail.com)
  */
 
 /* INCLUDES ******************************************************************/
@@ -250,10 +251,12 @@ LpcRequestWaitReplyPort(IN PVOID PortObject,
     /* Check if this is a callback */
     if (Callback)
     {
-        /* FIXME: TODO */
-        Semaphore = NULL; // we'd use the Thread Semaphore here
-        ASSERT(FALSE);
-        return STATUS_NOT_IMPLEMENTED;
+        /* Allocate the callback ID */
+        Message->Request.CallbackId = LpcpNextCallbackId++;
+        if (!LpcpNextCallbackId) LpcpNextCallbackId = 1;
+        
+        /* Set up the semaphore for the callback thread */
+        Semaphore = &Thread->KeyedWaitSemaphore;
     }
     else
     {
@@ -833,9 +836,12 @@ NtRequestWaitReplyPort(IN HANDLE PortHandle,
     /* Check if this is a callback */
     if (Callback)
     {
-        /* FIXME: TODO */
-        Semaphore = NULL; // we'd use the Thread Semaphore here
-        ASSERT(FALSE);
+        /* Allocate the callback ID */
+        Message->Request.CallbackId = LpcpNextCallbackId++;
+        if (!LpcpNextCallbackId) LpcpNextCallbackId = 1;
+        
+        /* Set up the semaphore for the callback thread */
+        Semaphore = &Thread->KeyedWaitSemaphore;
     }
     else
     {

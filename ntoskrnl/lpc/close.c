@@ -4,6 +4,7 @@
  * FILE:            ntoskrnl/lpc/close.c
  * PURPOSE:         Local Procedure Call: Rundown, Cleanup, Deletion
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ *                  Alexander Kruglov (alex.kruglov@mail.com)
  */
 
 /* INCLUDES ******************************************************************/
@@ -39,8 +40,19 @@ LpcExitThread(IN PETHREAD Thread)
     Message = LpcpGetMessageFromThread(Thread);
     if (Message)
     {
-        /* FIXME: TODO */
-        ASSERT(FALSE);
+        /* Clear the thread's reply message */
+        Thread->LpcReplyMessage = NULL;
+        
+        /* Check if the message has a replied-to thread */
+        if (Message->RepliedToThread)
+        {
+            /* Dereference the replied-to thread */
+            ObDereferenceObject(Message->RepliedToThread);
+            Message->RepliedToThread = NULL;
+        }
+        
+        /* Free the message to the port zone */
+        LpcpFreeToPortZone(Message, LPCP_LOCK_HELD);
     }
 
     /* Release the lock */

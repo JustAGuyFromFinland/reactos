@@ -4,6 +4,7 @@
 * FILE:            ntoskrnl/lpc/complete.c
 * PURPOSE:         Local Procedure Call: Connection Completion
 * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+                   Alexander Kruglov (alex.kruglov@mail.com)
 */
 
 /* INCLUDES ******************************************************************/
@@ -319,9 +320,93 @@ NtAcceptConnectPort(OUT PHANDLE PortHandle,
     /* Check if there's a server section */
     if (ServerView)
     {
-        /* FIXME: TODO */
-        UNREFERENCED_PARAMETER(CapturedServerView);
-        ASSERT(FALSE);
+        /* Validate that the server provided a section handle */
+        if (CapturedServerView.SectionHandle)
+        {
+            PVOID SectionObject;
+            LARGE_INTEGER ServerSectionOffset;
+            
+            /* Reference the section object from the handle */
+            Status = ObReferenceObjectByHandle(CapturedServerView.SectionHandle,
+                                             SECTION_MAP_READ | SECTION_MAP_WRITE,
+                                             MmSectionObjectType,
+                                             PreviousMode,
+                                             &SectionObject,
+                                             NULL);
+            if (NT_SUCCESS(Status))
+            {
+                /* Setup the section offset */
+                ServerSectionOffset.LowPart = CapturedServerView.SectionOffset;
+                ServerSectionOffset.HighPart = 0;
+                
+                /* Map the server section into the client process */
+                Status = MmMapViewOfSection(SectionObject,
+                                          ClientProcess,
+                                          &ServerPort->ServerSectionBase,
+                                          0,
+                                          0,
+                                          &ServerSectionOffset,
+                                          &CapturedServerView.ViewSize,
+                                          ViewUnmap,
+                                          0,
+                                          PAGE_READWRITE);
+                
+                if (NT_SUCCESS(Status))
+                {
+                    /* Update the connection message with the mapped view */
+                    ConnectMessage->ServerView.Length = CapturedServerView.Length;
+                    ConnectMessage->ServerView.ViewSize = CapturedServerView.ViewSize;
+                    ConnectMessage->ServerView.ViewBase = ServerPort->ServerSectionBase;
+                    
+                    /* Update the server view offset */
+                    CapturedServerView.SectionOffset = ServerSectionOffset.LowPart;
+                    
+                    LPCTRACE(LPC_COMPLETE_DEBUG,
+                             "Server view mapped: Base=%p Size=%lx Offset=%lx\n",
+                             ServerPort->ServerSectionBase,
+                             CapturedServerView.ViewSize,
+                             CapturedServerView.SectionOffset);
+                }
+                else
+                {
+                    DPRINT1("Server section mapping failed: %lx\n", Status);
+                    LPCTRACE(LPC_COMPLETE_DEBUG,
+                             "Server view mapping failed: %lx. Size: %lx, Offset: %lx\n",
+                             Status,
+                             CapturedServerView.ViewSize,
+                             CapturedServerView.SectionOffset);
+                }
+                
+                /* Dereference the section object */
+                ObDereferenceObject(SectionObject);
+                
+                /* If mapping failed, cleanup and exit */
+                if (!NT_SUCCESS(Status))
+                {
+                    ObDereferenceObject(ServerPort);
+                    goto Cleanup;
+                }
+            }
+            else
+            {
+                /* Invalid section handle */
+                DPRINT1("Failed to reference server section handle: %lx\n", Status);
+                ObDereferenceObject(ServerPort);
+                goto Cleanup;
+            }
+        }
+        else
+        {
+            /* Copy the server view information without mapping */
+            ConnectMessage->ServerView.Length = CapturedServerView.Length;
+            ConnectMessage->ServerView.ViewSize = CapturedServerView.ViewSize;
+            ConnectMessage->ServerView.ViewBase = CapturedServerView.ViewBase;
+            
+            LPCTRACE(LPC_COMPLETE_DEBUG,
+                     "Server view copied without mapping: Base=%p Size=%lx\n",
+                     CapturedServerView.ViewBase,
+                     CapturedServerView.ViewSize);
+        }
     }
 
     /* Reference the server port until it's fully inserted */

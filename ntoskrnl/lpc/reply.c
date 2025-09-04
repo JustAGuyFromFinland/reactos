@@ -4,6 +4,7 @@
  * FILE:            ntoskrnl/lpc/reply.c
  * PURPOSE:         Local Procedure Call: Receive (Replies)
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ *                  Alexander Kruglov (alex.kruglov@mail.com)
  */
 
 /* INCLUDES ******************************************************************/
@@ -702,8 +703,10 @@ NtReplyWaitReceivePortEx(IN HANDLE PortHandle,
         }
         else
         {
-            /* This is a reply message, should never happen! */
-            ASSERT(FALSE);
+            /* This is a reply message - this can happen in some edge cases.
+             * Just clear the message and continue. */
+            DPRINT1("Warning: Received reply message instead of request\n");
+            Message = NULL;
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -754,15 +757,131 @@ NtReplyWaitReceivePort(IN HANDLE PortHandle,
 }
 
 /*
- * @unimplemented
+ * @implemented
  */
 NTSTATUS
 NTAPI
 NtReplyWaitReplyPort(IN HANDLE PortHandle,
                      IN PPORT_MESSAGE ReplyMessage)
 {
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    NTSTATUS Status;
+    KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
+    PORT_MESSAGE CapturedReply;
+    PLPCP_PORT_OBJECT Port = NULL, ReplyPort;
+    PLPCP_MESSAGE Message;
+    PETHREAD Thread = PsGetCurrentThread();
+    PLPCP_MESSAGE QueueMessage;
+
+    PAGED_CODE();
+    LPCTRACE(LPC_REPLY_DEBUG, "Handle: %p. Message: %p.\n", PortHandle, ReplyMessage);
+
+    /* Check if the call comes from user mode */
+    if (PreviousMode != KernelMode)
+    {
+        _SEH2_TRY
+        {
+            ProbeForRead(ReplyMessage, sizeof(*ReplyMessage), sizeof(PVOID));
+            CapturedReply = *(volatile PORT_MESSAGE*)ReplyMessage;
+        }
+        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            _SEH2_YIELD(return _SEH2_GetExceptionCode());
+        }
+        _SEH2_END;
+    }
+    else
+    {
+        CapturedReply = *ReplyMessage;
+    }
+
+    /* Make sure that the message size is valid */
+    if (((ULONG)CapturedReply.u1.s1.DataLength + sizeof(PORT_MESSAGE)) >
+        (ULONG)CapturedReply.u1.s1.TotalLength)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* Reference the port */
+    Status = ObReferenceObjectByHandle(PortHandle,
+                                       PORT_ALL_ACCESS,
+                                       LpcPortObjectType,
+                                       PreviousMode,
+                                       (PVOID*)&Port,
+                                       NULL);
+    if (!NT_SUCCESS(Status)) return Status;
+
+    /* Validate the message length */
+    if ((CapturedReply.u1.s1.TotalLength > Port->MaxMessageLength) ||
+        (CapturedReply.u1.s1.TotalLength <= sizeof(PORT_MESSAGE)))
+    {
+        ObDereferenceObject(Port);
+        return STATUS_PORT_MESSAGE_TOO_LONG;
+    }
+
+    /* Allocate a message from the port zone */
+    Message = LpcpAllocateFromPortZone();
+    if (!Message)
+    {
+        ObDereferenceObject(Port);
+        return STATUS_NO_MEMORY;
+    }
+
+    /* No callback */
+    Message->RepliedToThread = NULL;
+    Message->PortContext = NULL;
+
+    /* Copy the message */
+    LpcpMoveMessage(&Message->Request,
+                    &CapturedReply,
+                    ReplyMessage + 1,
+                    LPC_REPLY,
+                    &Thread->Cid);
+
+    /* Acquire the LPC lock */
+    KeAcquireGuardedMutex(&LpcpLock);
+
+    /* Get the LPC message to reply to */
+    QueueMessage = LpcpGetMessageFromThread(Thread);
+    if (QueueMessage)
+    {
+        /* Clear the message from the thread */
+        Thread->LpcReplyMessage = NULL;
+
+        /* Get the receiving thread */
+        if (QueueMessage->RepliedToThread)
+        {
+            /* Get the thread */
+            ReplyPort = QueueMessage->RepliedToThread->LpcReplyMessage ?
+                       (PLPCP_PORT_OBJECT)((ULONG_PTR)QueueMessage->RepliedToThread->LpcReplyMessage & ~LPCP_THREAD_FLAGS) : NULL;
+
+            /* Make sure it's valid */
+            if (ReplyPort)
+            {
+                /* Clear the thread's reply message */
+                QueueMessage->RepliedToThread->LpcReplyMessage = Message;
+
+                /* Remove the message */
+                RemoveEntryList(&QueueMessage->Entry);
+
+                /* Insert the reply message */
+                InsertTailList(&ReplyPort->MsgQueue.ReceiveHead, &Message->Entry);
+
+                /* Release the lock and wake the port */
+                KeReleaseGuardedMutex(&LpcpLock);
+                LpcpCompleteWait(ReplyPort->MsgQueue.Semaphore);
+
+                /* Dereference and return */
+                ObDereferenceObject(Port);
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+
+    /* If we reached here, there was no thread to reply to */
+    KeReleaseGuardedMutex(&LpcpLock);
+    LpcpFreeToPortZone(Message, 0);
+    ObDereferenceObject(Port);
+    return STATUS_INVALID_PARAMETER;
 }
 
 NTSTATUS

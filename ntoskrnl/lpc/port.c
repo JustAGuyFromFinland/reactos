@@ -4,6 +4,7 @@
  * FILE:            ntoskrnl/lpc/port.c
  * PURPOSE:         Local Procedure Call: Port Management
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ *                  Alexander Kruglov (alex.kruglov@mail.com)
  */
 
 /* INCLUDES ******************************************************************/
@@ -280,6 +281,9 @@ NtQueryPortInformationProcess(VOID)
     return STATUS_UNSUCCESSFUL;
 }
 
+/*
+ * @implemented
+ */
 NTSTATUS
 NTAPI
 NtQueryInformationPort(IN HANDLE PortHandle,
@@ -288,8 +292,59 @@ NtQueryInformationPort(IN HANDLE PortHandle,
                        IN ULONG PortInformationLength,
                        OUT PULONG ReturnLength)
 {
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    NTSTATUS Status;
+    KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
+    PLPCP_PORT_OBJECT Port;
+
+    PAGED_CODE();
+
+    /* Check if the call comes from user mode */
+    if (PreviousMode != KernelMode)
+    {
+        _SEH2_TRY
+        {
+            ProbeForWrite(PortInformation, PortInformationLength, sizeof(ULONG));
+            if (ReturnLength) ProbeForWriteUlong(ReturnLength);
+        }
+        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            _SEH2_YIELD(return _SEH2_GetExceptionCode());
+        }
+        _SEH2_END;
+    }
+
+    /* Check the information class */
+    if (PortInformationClass != PortNoInformation)
+    {
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    /* Reference the port */
+    Status = ObReferenceObjectByHandle(PortHandle,
+                                       PORT_ALL_ACCESS,
+                                       LpcPortObjectType,
+                                       PreviousMode,
+                                       (PVOID*)&Port,
+                                       NULL);
+    if (!NT_SUCCESS(Status)) return Status;
+
+    /* Return the length */
+    if (ReturnLength)
+    {
+        _SEH2_TRY
+        {
+            *ReturnLength = 0;
+        }
+        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            Status = _SEH2_GetExceptionCode();
+        }
+        _SEH2_END;
+    }
+
+    /* Dereference the port and return success */
+    ObDereferenceObject(Port);
+    return STATUS_SUCCESS;
 }
 
 /* EOF */
