@@ -11,8 +11,7 @@
 #include <ndk/rtlfuncs.h>
 #include "arbiter.h"
 
-#define NDEBUG
-#include <debug.h>
+#include <reactos/debug.h>
 
 /* GLOBALS ********************************************************************/
 
@@ -218,10 +217,52 @@ ArbAddOrdering(
     _In_ UINT64 MinimumAddress,
     _In_ UINT64 MaximumAddress)
 {
+    PARBITER_ORDERING NewOrderings;
+    UINT16 NewMaximum;
+
     PAGED_CODE();
 
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    ASSERT(OrderList != NULL);
+    ASSERT(MinimumAddress <= MaximumAddress);
+
+    DPRINT("ArbAddOrdering: Adding range 0x%I64x - 0x%I64x\n", MinimumAddress, MaximumAddress);
+
+    /* Check if we need to expand the array */
+    if (OrderList->Count >= OrderList->Maximum)
+    {
+        /* Calculate new size (double the current size or start with 4) */
+        NewMaximum = (OrderList->Maximum == 0) ? 4 : (OrderList->Maximum * 2);
+
+        /* Allocate new array */
+        NewOrderings = ExAllocatePoolWithTag(PagedPool,
+                                              NewMaximum * sizeof(ARBITER_ORDERING),
+                                              TAG_ARB_RANGE);
+        if (!NewOrderings)
+        {
+            DPRINT1("ArbAddOrdering: Failed to allocate ordering array\n");
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        /* Copy existing entries */
+        if (OrderList->Orderings != NULL)
+        {
+            RtlCopyMemory(NewOrderings,
+                          OrderList->Orderings,
+                          OrderList->Count * sizeof(ARBITER_ORDERING));
+            ExFreePoolWithTag(OrderList->Orderings, TAG_ARB_RANGE);
+        }
+
+        /* Update the list */
+        OrderList->Orderings = NewOrderings;
+        OrderList->Maximum = NewMaximum;
+    }
+
+    /* Add the new ordering */
+    OrderList->Orderings[OrderList->Count].Start = MinimumAddress;
+    OrderList->Orderings[OrderList->Count].End = MaximumAddress;
+    OrderList->Count++;
+
+    return STATUS_SUCCESS;
 }
 
 CODE_SEG("PAGE")
@@ -232,10 +273,39 @@ ArbPruneOrdering(
     _In_ UINT64 MinimumAddress,
     _In_ UINT64 MaximumAddress)
 {
+    UINT16 i, WriteIndex;
+
     PAGED_CODE();
 
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    ASSERT(OrderingList != NULL);
+    ASSERT(MinimumAddress <= MaximumAddress);
+
+    DPRINT("ArbPruneOrdering: Pruning range 0x%I64x - 0x%I64x\n", MinimumAddress, MaximumAddress);
+
+    WriteIndex = 0;
+
+    /* Remove any orderings that overlap with the specified range */
+    for (i = 0; i < OrderingList->Count; i++)
+    {
+        PARBITER_ORDERING Current = &OrderingList->Orderings[i];
+
+        /* Check if the current ordering overlaps with the range to prune */
+        if (Current->End < MinimumAddress || Current->Start > MaximumAddress)
+        {
+            /* No overlap - keep this ordering */
+            if (WriteIndex != i)
+            {
+                OrderingList->Orderings[WriteIndex] = *Current;
+            }
+            WriteIndex++;
+        }
+        /* Otherwise, skip this ordering (effectively removing it) */
+    }
+
+    /* Update the count */
+    OrderingList->Count = WriteIndex;
+
+    return STATUS_SUCCESS;
 }
 
 CODE_SEG("PAGE")
@@ -246,8 +316,14 @@ ArbInitializeOrderingList(
 {
     PAGED_CODE();
 
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    ASSERT(OrderList != NULL);
+
+    /* Initialize the ordering list structure */
+    OrderList->Count = 0;
+    OrderList->Maximum = 0;
+    OrderList->Orderings = NULL;
+
+    return STATUS_SUCCESS;
 }
 
 CODE_SEG("PAGE")
@@ -258,7 +334,18 @@ ArbFreeOrderingList(
 {
     PAGED_CODE();
 
-    UNIMPLEMENTED;
+    ASSERT(OrderList != NULL);
+
+    /* Free the orderings array if allocated */
+    if (OrderList->Orderings != NULL)
+    {
+        ExFreePoolWithTag(OrderList->Orderings, TAG_ARB_RANGE);
+        OrderList->Orderings = NULL;
+    }
+
+    /* Reset the list */
+    OrderList->Count = 0;
+    OrderList->Maximum = 0;
 }
 
 CODE_SEG("PAGE")
@@ -270,9 +357,262 @@ ArbBuildAssignmentOrdering(
     _In_ PCWSTR ReservedOrderName,
     _In_ PARB_TRANSLATE_ORDERING TranslateOrderingFunction)
 {
+    NTSTATUS Status;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING KeyName;
+    HANDLE KeyHandle = NULL;
+    HANDLE OrderKeyHandle = NULL;
+    HANDLE ReservedKeyHandle = NULL;
+    PKEY_VALUE_FULL_INFORMATION ValueInfo = NULL;
+    ULONG ResultLength;
+    ULONG i;
+
     PAGED_CODE();
 
-    UNIMPLEMENTED;
+    DPRINT("ArbBuildAssignmentOrdering: OrderName '%S', ReservedOrderName '%S'\n", 
+           OrderName, ReservedOrderName);
+
+    /* Initialize the ordering lists */
+    Status = ArbInitializeOrderingList(&ArbInstance->OrderingList);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("ArbBuildAssignmentOrdering: Failed to initialize ordering list (0x%08X)\n", Status);
+        return Status;
+    }
+
+    Status = ArbInitializeOrderingList(&ArbInstance->ReservedList);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("ArbBuildAssignmentOrdering: Failed to initialize reserved list (0x%08X)\n", Status);
+        ArbFreeOrderingList(&ArbInstance->OrderingList);
+        return Status;
+    }
+
+    /* Try to open the registry key for ordering information */
+    RtlInitUnicodeString(&KeyName, L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\SystemResources\\AssignmentOrdering");
+    InitializeObjectAttributes(&ObjectAttributes,
+                               &KeyName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               NULL,
+                               NULL);
+
+    Status = ZwOpenKey(&KeyHandle, KEY_READ, &ObjectAttributes);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT("ArbBuildAssignmentOrdering: No assignment ordering key found (0x%08X)\n", Status);
+        /* This is not an error - we'll use default ordering */
+        return STATUS_SUCCESS;
+    }
+
+    /* Try to open the specific ordering subkey */
+    RtlInitUnicodeString(&KeyName, OrderName);
+    InitializeObjectAttributes(&ObjectAttributes,
+                               &KeyName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               KeyHandle,
+                               NULL);
+
+    Status = ZwOpenKey(&OrderKeyHandle, KEY_READ, &ObjectAttributes);
+    if (NT_SUCCESS(Status))
+    {
+        /* Enumerate values in the ordering key */
+        for (i = 0; ; i++)
+        {
+            Status = ZwEnumerateValueKey(OrderKeyHandle,
+                                         i,
+                                         KeyValueFullInformation,
+                                         NULL,
+                                         0,
+                                         &ResultLength);
+            
+            if (Status == STATUS_NO_MORE_ENTRIES)
+            {
+                break;
+            }
+            
+            if (Status != STATUS_BUFFER_TOO_SMALL)
+            {
+                continue;
+            }
+
+            ValueInfo = ExAllocatePoolWithTag(PagedPool, ResultLength, TAG_ARBITER);
+            if (!ValueInfo)
+            {
+                continue;
+            }
+
+            Status = ZwEnumerateValueKey(OrderKeyHandle,
+                                         i,
+                                         KeyValueFullInformation,
+                                         ValueInfo,
+                                         ResultLength,
+                                         &ResultLength);
+            
+            if (NT_SUCCESS(Status) && 
+                ValueInfo->Type == REG_RESOURCE_LIST &&
+                ValueInfo->DataLength >= sizeof(CM_RESOURCE_LIST))
+            {
+                PCM_RESOURCE_LIST ResourceList = (PCM_RESOURCE_LIST)((PUCHAR)ValueInfo + ValueInfo->DataOffset);
+                ULONG j;
+
+                /* Process each resource descriptor */
+                if (ResourceList->Count > 0)
+                {
+                    PCM_FULL_RESOURCE_DESCRIPTOR FullDescriptor = &ResourceList->List[0];
+                    
+                    for (j = 0; j < FullDescriptor->PartialResourceList.Count; j++)
+                    {
+                        PCM_PARTIAL_RESOURCE_DESCRIPTOR Descriptor = &FullDescriptor->PartialResourceList.PartialDescriptors[j];
+                        
+                        if (Descriptor->Type == ArbInstance->ResourceType)
+                        {
+                            UINT64 Start, End;
+                            
+                            /* Extract resource range */
+                            if (ArbInstance->ResourceType == CmResourceTypePort ||
+                                ArbInstance->ResourceType == CmResourceTypeMemory)
+                            {
+                                Start = Descriptor->u.Generic.Start.QuadPart;
+                                End = Start + Descriptor->u.Generic.Length - 1;
+                            }
+                            else if (ArbInstance->ResourceType == CmResourceTypeInterrupt)
+                            {
+                                Start = Descriptor->u.Interrupt.Level;
+                                End = Start;
+                            }
+                            else if (ArbInstance->ResourceType == CmResourceTypeBusNumber)
+                            {
+                                Start = Descriptor->u.BusNumber.Start;
+                                End = Start + Descriptor->u.BusNumber.Length - 1;
+                            }
+                            else
+                            {
+                                continue;
+                            }
+
+                            /* Add to ordering list */
+                            ArbAddOrdering(&ArbInstance->OrderingList, Start, End);
+                        }
+                    }
+                }
+            }
+
+            ExFreePoolWithTag(ValueInfo, TAG_ARBITER);
+            ValueInfo = NULL;
+        }
+
+        ZwClose(OrderKeyHandle);
+    }
+
+    /* Try to open the reserved ordering subkey if it's different */
+    if (wcscmp(OrderName, ReservedOrderName) != 0)
+    {
+        RtlInitUnicodeString(&KeyName, ReservedOrderName);
+        InitializeObjectAttributes(&ObjectAttributes,
+                                   &KeyName,
+                                   OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                                   KeyHandle,
+                                   NULL);
+
+        Status = ZwOpenKey(&ReservedKeyHandle, KEY_READ, &ObjectAttributes);
+        if (NT_SUCCESS(Status))
+        {
+            /* Enumerate values in the reserved ordering key */
+            for (i = 0; ; i++)
+            {
+                Status = ZwEnumerateValueKey(ReservedKeyHandle,
+                                             i,
+                                             KeyValueFullInformation,
+                                             NULL,
+                                             0,
+                                             &ResultLength);
+                
+                if (Status == STATUS_NO_MORE_ENTRIES)
+                {
+                    break;
+                }
+                
+                if (Status != STATUS_BUFFER_TOO_SMALL)
+                {
+                    continue;
+                }
+
+                ValueInfo = ExAllocatePoolWithTag(PagedPool, ResultLength, TAG_ARBITER);
+                if (!ValueInfo)
+                {
+                    continue;
+                }
+
+                Status = ZwEnumerateValueKey(ReservedKeyHandle,
+                                             i,
+                                             KeyValueFullInformation,
+                                             ValueInfo,
+                                             ResultLength,
+                                             &ResultLength);
+                
+                if (NT_SUCCESS(Status) && 
+                    ValueInfo->Type == REG_RESOURCE_LIST &&
+                    ValueInfo->DataLength >= sizeof(CM_RESOURCE_LIST))
+                {
+                    PCM_RESOURCE_LIST ResourceList = (PCM_RESOURCE_LIST)((PUCHAR)ValueInfo + ValueInfo->DataOffset);
+                    ULONG j;
+
+                    /* Process each resource descriptor */
+                    if (ResourceList->Count > 0)
+                    {
+                        PCM_FULL_RESOURCE_DESCRIPTOR FullDescriptor = &ResourceList->List[0];
+                        
+                        for (j = 0; j < FullDescriptor->PartialResourceList.Count; j++)
+                        {
+                            PCM_PARTIAL_RESOURCE_DESCRIPTOR Descriptor = &FullDescriptor->PartialResourceList.PartialDescriptors[j];
+                            
+                            if (Descriptor->Type == ArbInstance->ResourceType)
+                            {
+                                UINT64 Start, End;
+                                
+                                /* Extract resource range */
+                                if (ArbInstance->ResourceType == CmResourceTypePort ||
+                                    ArbInstance->ResourceType == CmResourceTypeMemory)
+                                {
+                                    Start = Descriptor->u.Generic.Start.QuadPart;
+                                    End = Start + Descriptor->u.Generic.Length - 1;
+                                }
+                                else if (ArbInstance->ResourceType == CmResourceTypeInterrupt)
+                                {
+                                    Start = Descriptor->u.Interrupt.Level;
+                                    End = Start;
+                                }
+                                else if (ArbInstance->ResourceType == CmResourceTypeBusNumber)
+                                {
+                                    Start = Descriptor->u.BusNumber.Start;
+                                    End = Start + Descriptor->u.BusNumber.Length - 1;
+                                }
+                                else
+                                {
+                                    continue;
+                                }
+
+                                /* Add to reserved list */
+                                ArbAddOrdering(&ArbInstance->ReservedList, Start, End);
+                            }
+                        }
+                    }
+                }
+
+                ExFreePoolWithTag(ValueInfo, TAG_ARBITER);
+                ValueInfo = NULL;
+            }
+
+            ZwClose(ReservedKeyHandle);
+        }
+    }
+
+    if (KeyHandle)
+    {
+        ZwClose(KeyHandle);
+    }
+
+    DPRINT("ArbBuildAssignmentOrdering: Built ordering lists successfully\n");
     return STATUS_SUCCESS;
 }
 
