@@ -3,6 +3,49 @@
 #define NDEBUG
 #include <debug.h>
 
+//
+// ACPI Device Notification Handler
+//
+VOID
+AcpiDeviceNotificationHandler(
+    ACPI_HANDLE Device,
+    UINT32 NotifyValue,
+    VOID *Context)
+{
+  PPDO_DEVICE_DATA DeviceData = (PPDO_DEVICE_DATA)Context;
+  PLIST_ENTRY Entry;
+  PACPI_NOTIFICATION_HANDLER_ENTRY HandlerEntry;
+  KIRQL OldIrql;
+
+  if (!DeviceData)
+  {
+    return;
+  }
+
+  /* Call all registered notification handlers */
+  KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+  
+  Entry = DeviceData->NotificationHandlers.Flink;
+  while (Entry != &DeviceData->NotificationHandlers)
+  {
+    HandlerEntry = CONTAINING_RECORD(Entry, ACPI_NOTIFICATION_HANDLER_ENTRY, ListEntry);
+    
+    /* Get next entry before calling handler (in case handler modifies list) */
+    Entry = Entry->Flink;
+    
+    /* Release spinlock before calling handler to avoid holding it too long */
+    KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+    
+    /* Call the handler */
+    HandlerEntry->NotificationHandler(HandlerEntry->NotificationContext, NotifyValue);
+    
+    /* Reacquire for next iteration */
+    KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+  }
+  
+  KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+}
+
 VOID
 NTAPI
 AcpiInterfaceReference(PVOID Context)
@@ -77,7 +120,62 @@ AcpiInterfaceNotificationsRegister(PDEVICE_OBJECT Context,
                                    PDEVICE_NOTIFY_CALLBACK NotificationHandler,
                                    PVOID NotificationContext)
 {
-  UNIMPLEMENTED;
+  PPDO_DEVICE_DATA DeviceData;
+  PACPI_NOTIFICATION_HANDLER_ENTRY HandlerEntry;
+  ACPI_STATUS AcpiStatus;
+  BOOLEAN FirstHandler = FALSE;
+  KIRQL OldIrql;
+
+  if (!Context || !NotificationHandler)
+  {
+    return STATUS_INVALID_PARAMETER;
+  }
+
+  DeviceData = (PPDO_DEVICE_DATA)Context->DeviceExtension;
+  if (!DeviceData)
+  {
+    return STATUS_INVALID_PARAMETER;
+  }
+
+  /* Allocate handler entry */
+  HandlerEntry = ExAllocatePoolWithTag(NonPagedPool, 
+                                        sizeof(ACPI_NOTIFICATION_HANDLER_ENTRY), 
+                                        'AcpN');
+  if (!HandlerEntry)
+  {
+    return STATUS_INSUFFICIENT_RESOURCES;
+  }
+
+  HandlerEntry->NotificationHandler = NotificationHandler;
+  HandlerEntry->NotificationContext = NotificationContext;
+
+  /* Add to the device's notification handler list */
+  KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+  
+  /* Check if this is the first handler */
+  FirstHandler = IsListEmpty(&DeviceData->NotificationHandlers);
+  
+  InsertTailList(&DeviceData->NotificationHandlers, &HandlerEntry->ListEntry);
+  KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+
+  /* Register ACPI notify handler only for the first handler */
+  if (FirstHandler && DeviceData->AcpiHandle)
+  {
+    AcpiStatus = AcpiInstallNotifyHandler(DeviceData->AcpiHandle,
+                                          ACPI_ALL_NOTIFY,
+                                          AcpiDeviceNotificationHandler,
+                                          DeviceData);
+    if (ACPI_FAILURE(AcpiStatus))
+    {
+      /* Remove from list and free on failure */
+      KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+      RemoveEntryList(&HandlerEntry->ListEntry);
+      KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+      ExFreePoolWithTag(HandlerEntry, 'AcpN');
+      
+      return STATUS_UNSUCCESSFUL;
+    }
+  }
 
   return STATUS_SUCCESS;
 }
@@ -87,7 +185,55 @@ NTAPI
 AcpiInterfaceNotificationsUnregister(PDEVICE_OBJECT Context,
                                      PDEVICE_NOTIFY_CALLBACK NotificationHandler)
 {
-  UNIMPLEMENTED;
+  PPDO_DEVICE_DATA DeviceData;
+  PLIST_ENTRY Entry;
+  PACPI_NOTIFICATION_HANDLER_ENTRY HandlerEntry;
+  BOOLEAN Found = FALSE;
+  BOOLEAN IsEmpty = FALSE;
+  KIRQL OldIrql;
+
+  if (!Context || !NotificationHandler)
+  {
+    return;
+  }
+
+  DeviceData = (PPDO_DEVICE_DATA)Context->DeviceExtension;
+  if (!DeviceData)
+  {
+    return;
+  }
+
+  /* Find and remove the handler from the list */
+  KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+  
+  Entry = DeviceData->NotificationHandlers.Flink;
+  while (Entry != &DeviceData->NotificationHandlers)
+  {
+    HandlerEntry = CONTAINING_RECORD(Entry, ACPI_NOTIFICATION_HANDLER_ENTRY, ListEntry);
+    
+    if (HandlerEntry->NotificationHandler == NotificationHandler)
+    {
+      RemoveEntryList(&HandlerEntry->ListEntry);
+      ExFreePoolWithTag(HandlerEntry, 'AcpN');
+      Found = TRUE;
+      break;
+    }
+    
+    Entry = Entry->Flink;
+  }
+  
+  /* Check if this was the last handler */
+  IsEmpty = IsListEmpty(&DeviceData->NotificationHandlers);
+  
+  KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+
+  /* If no more handlers and we have an ACPI handle, unregister ACPI notify handler */
+  if (Found && IsEmpty && DeviceData->AcpiHandle)
+  {
+    AcpiRemoveNotifyHandler(DeviceData->AcpiHandle,
+                            ACPI_ALL_NOTIFY,
+                            AcpiDeviceNotificationHandler);
+  }
 }
 
 NTSTATUS

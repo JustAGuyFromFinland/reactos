@@ -392,7 +392,24 @@ Bus_DestroyPdo (
     PPDO_DEVICE_DATA    PdoData
     )
 {
+    PLIST_ENTRY Entry;
+    PACPI_NOTIFICATION_HANDLER_ENTRY HandlerEntry;
+    KIRQL OldIrql;
+
     PAGED_CODE ();
+
+    //
+    // Clean up notification handlers
+    //
+
+    KeAcquireSpinLock(&PdoData->NotificationLock, &OldIrql);
+    while (!IsListEmpty(&PdoData->NotificationHandlers))
+    {
+        Entry = RemoveHeadList(&PdoData->NotificationHandlers);
+        HandlerEntry = CONTAINING_RECORD(Entry, ACPI_NOTIFICATION_HANDLER_ENTRY, ListEntry);
+        ExFreePoolWithTag(HandlerEntry, 'AcpN');
+    }
+    KeReleaseSpinLock(&PdoData->NotificationLock, OldIrql);
 
     //
     // BusEnum does not queue any irps at this time so we have nothing to do.
@@ -469,6 +486,10 @@ Bus_InitializePdo (
 
     pdoData->Common.DevicePowerState = ntState;
     pdoData->Common.SystemPowerState = FdoData->Common.SystemPowerState;
+
+    /* Initialize notification handler list and spinlock */
+    InitializeListHead(&pdoData->NotificationHandlers);
+    KeInitializeSpinLock(&pdoData->NotificationLock);
 
     /* Identify the dock device */
     if (pdoData->AcpiHandle)

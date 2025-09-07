@@ -47,6 +47,10 @@ typedef struct _PDO_DEVICE_DATA
     LIST_ENTRY  Link;
     ULONG       InterfaceRefCount;
     UNICODE_STRING InterfaceName;
+    
+    // List of registered notification handlers
+    LIST_ENTRY  NotificationHandlers;
+    KSPIN_LOCK  NotificationLock;
 
 } PDO_DEVICE_DATA, *PPDO_DEVICE_DATA;
 
@@ -73,6 +77,16 @@ typedef struct _FDO_DEVICE_DATA
     FAST_MUTEX      Mutex;
 
 } FDO_DEVICE_DATA, *PFDO_DEVICE_DATA;
+
+//
+// Structure to track device notification handlers
+//
+typedef struct _ACPI_NOTIFICATION_HANDLER_ENTRY
+{
+    LIST_ENTRY ListEntry;
+    PDEVICE_NOTIFY_CALLBACK NotificationHandler;
+    PVOID NotificationContext;
+} ACPI_NOTIFICATION_HANDLER_ENTRY, *PACPI_NOTIFICATION_HANDLER_ENTRY;
 
 #define FDO_FROM_PDO(pdoData) \
           ((PFDO_DEVICE_DATA) (pdoData)->ParentFdo->DeviceExtension)
@@ -269,6 +283,16 @@ NTSTATUS
 Bus_PDO_QueryInterface(
      PPDO_DEVICE_DATA     DeviceData,
       PIRP   Irp );
+
+//
+// ACPI Notification handler functions
+//
+VOID
+AcpiDeviceNotificationHandler(
+    ACPI_HANDLE Device,
+    UINT32 NotifyValue,
+    VOID *Context
+    );
 
 BOOLEAN
 Bus_GetCrispinessLevel(
