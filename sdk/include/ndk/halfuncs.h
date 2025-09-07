@@ -233,6 +233,28 @@ HalSystemVectorDispatchEntry(
 );
 
 //
+// MSI Functions
+//
+NTHALAPI
+NTSTATUS
+NTAPI
+HalpConnectMsiInterrupt(
+    _In_ ULONG Vector,
+    _In_ PKSERVICE_ROUTINE ServiceRoutine,
+    _In_ PVOID ServiceContext,
+    _In_ ULONG BusNumber,
+    _In_ ULONG SlotNumber,
+    _Out_ PKINTERRUPT *InterruptObject
+);
+
+NTHALAPI
+VOID
+NTAPI
+HalpDisconnectMsiInterrupt(
+    _In_ PKINTERRUPT InterruptObject
+);
+
+//
 // Bus Functions
 //
 NTHALAPI

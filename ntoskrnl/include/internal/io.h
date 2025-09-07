@@ -1464,6 +1464,64 @@ extern RESERVE_IRP_ALLOCATOR IopReserveIrpAllocator;
 extern BOOLEAN IoRemoteBootClient;
 
 //
+// MSI Support Functions
+//
+NTSTATUS
+NTAPI
+IopConnectInterruptMessageBased(
+    IN OUT PIO_CONNECT_INTERRUPT_PARAMETERS Parameters);
+
+NTSTATUS
+NTAPI
+IopAllocateMsiVector(
+    OUT PULONG Vector);
+
+ULONG
+NTAPI
+IopCalculateMsiAddress(
+    IN KAFFINITY TargetProcessors);
+
+USHORT
+NTAPI
+IopCalculateMsiData(
+    IN ULONG Vector);
+
+NTSTATUS
+NTAPI
+IopConfigureDeviceMsi(
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PIO_INTERRUPT_MESSAGE_INFO MessageInfo);
+
+NTSTATUS
+NTAPI
+IopConfigureMsiX(
+    IN ULONG BusNumber,
+    IN ULONG SlotNumber,
+    IN UCHAR CapabilityOffset,
+    IN PIO_INTERRUPT_MESSAGE_INFO MessageInfo);
+
+NTSTATUS
+NTAPI
+IopGetDevicePciLocation(
+    IN PDEVICE_OBJECT DeviceObject,
+    OUT PULONG BusNumber,
+    OUT PULONG SlotNumber);
+
+UCHAR
+NTAPI
+IopFindPciCapability(
+    IN PPCI_COMMON_CONFIG PciConfig,
+    IN UCHAR CapabilityId);
+
+NTSTATUS
+NTAPI
+IopConfigureMsi(
+    IN ULONG BusNumber,
+    IN ULONG SlotNumber,
+    IN UCHAR CapabilityOffset,
+    IN PIO_INTERRUPT_MESSAGE_INFO MessageInfo);
+
+//
 // Inlined Functions
 //
 #include "io_x.h"

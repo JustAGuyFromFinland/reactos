@@ -1,0 +1,5 @@
+add_executable(msitest msitest.c)
+set_module_type(msitest kernelmodedriver)
+target_link_libraries(msitest ntoskrnl hal)
+add_importlibs(msitest ntoskrnl hal)
+add_cd_file(TARGET msitest DESTINATION reactos/system32/drivers NO_CAB FOR all)

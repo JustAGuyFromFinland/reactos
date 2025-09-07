@@ -954,6 +954,9 @@ HalpSetupAcpiPhase0(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
         DbgPrint("\n");
     }
 
+    /* Initialize MSI support for ACPI-based HALs */
+    HalpInitializeMsiSupport();
+
     /* Return success */
     return STATUS_SUCCESS;
 }

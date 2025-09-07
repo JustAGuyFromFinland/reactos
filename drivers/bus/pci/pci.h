@@ -7,6 +7,55 @@
 
 #define TAG_PCI '0ICP'
 
+//
+// PCIe Device Types
+//
+#define PCIE_DEVICE_TYPE_ENDPOINT           0x0
+#define PCIE_DEVICE_TYPE_LEGACY_ENDPOINT    0x1
+#define PCIE_DEVICE_TYPE_ROOT_PORT          0x4
+#define PCIE_DEVICE_TYPE_UPSTREAM_PORT      0x5
+#define PCIE_DEVICE_TYPE_DOWNSTREAM_PORT    0x6
+#define PCIE_DEVICE_TYPE_PCIE_TO_PCI_BRIDGE 0x7
+#define PCIE_DEVICE_TYPE_PCI_TO_PCIE_BRIDGE 0x8
+#define PCIE_DEVICE_TYPE_ROOT_ENDPOINT      0x9
+#define PCIE_DEVICE_TYPE_ROOT_EVENT_COLLECTOR 0xA
+
+//
+// PCIe Capability Structure Offsets
+//
+#define PCIE_CAPABILITIES_REGISTER          0x02
+#define PCIE_DEVICE_CAPABILITIES_REGISTER   0x04
+#define PCIE_DEVICE_CONTROL_REGISTER        0x08
+#define PCIE_DEVICE_STATUS_REGISTER         0x0A
+#define PCIE_LINK_CAPABILITIES_REGISTER     0x0C
+#define PCIE_LINK_CONTROL_REGISTER          0x10
+#define PCIE_LINK_STATUS_REGISTER           0x12
+
+//
+// PCIe Device Control Register Bits
+//
+#define PCIE_DEVICE_CONTROL_CORRECTABLE_ERROR_ENABLE   0x0001
+#define PCIE_DEVICE_CONTROL_NON_FATAL_ERROR_ENABLE     0x0002
+#define PCIE_DEVICE_CONTROL_FATAL_ERROR_ENABLE         0x0004
+#define PCIE_DEVICE_CONTROL_UNSUPPORTED_REQUEST_ENABLE 0x0008
+#define PCIE_DEVICE_CONTROL_RELAXED_ORDERING_ENABLE    0x0010
+#define PCIE_DEVICE_CONTROL_MAX_PAYLOAD_SIZE_MASK      0x00E0
+#define PCIE_DEVICE_CONTROL_EXTENDED_TAG_ENABLE        0x0100
+#define PCIE_DEVICE_CONTROL_PHANTOM_FUNCTIONS_ENABLE   0x0200
+#define PCIE_DEVICE_CONTROL_AUX_POWER_PM_ENABLE        0x0400
+#define PCIE_DEVICE_CONTROL_NO_SNOOP_ENABLE           0x0800
+
+//
+// PCIe Link Control Register Bits
+//
+#define PCIE_LINK_CONTROL_ASPM_L0S_ENABLE              0x0001
+#define PCIE_LINK_CONTROL_ASPM_L1_ENABLE               0x0002
+#define PCIE_LINK_CONTROL_RCB                         0x0008
+#define PCIE_LINK_CONTROL_DISABLE_LINK                0x0010
+#define PCIE_LINK_CONTROL_RETRAIN_LINK                0x0020
+#define PCIE_LINK_CONTROL_COMMON_CLOCK_CONFIG         0x0040
+#define PCIE_LINK_CONTROL_EXTENDED_SYNC               0x0080
+
 typedef struct _PCI_DEVICE
 {
     // Entry on device list
@@ -27,6 +76,25 @@ typedef struct _PCI_DEVICE
     BOOLEAN EnableBusMaster;
     // Whether the device is owned by the KD
     BOOLEAN IsDebuggingDevice;
+    // MSI support fields
+    BOOLEAN SupportsMsi;
+    BOOLEAN SupportsMsiX;
+    UCHAR MsiCapabilityOffset;
+    UCHAR MsiXCapabilityOffset;
+    // PCIe support fields
+    BOOLEAN IsPciExpress;
+    UCHAR PciExpressCapabilityOffset;
+    USHORT PciExpressCapabilities;
+    USHORT PciExpressDeviceControl;
+    USHORT PciExpressLinkControl;
+    UCHAR PciExpressVersion;
+    UCHAR DeviceType;
+    BOOLEAN SupportsAer;
+    UCHAR AerCapabilityOffset;
+    BOOLEAN SupportsPowerManagement;
+    UCHAR PowerManagementCapabilityOffset;
+    BOOLEAN SupportsHotPlug;
+    BOOLEAN SupportsLinkStateManagement;
 } PCI_DEVICE, *PPCI_DEVICE;
 
 
@@ -191,6 +259,42 @@ NTSTATUS
 PdoPowerControl(
     PDEVICE_OBJECT DeviceObject,
     PIRP Irp);
+
+NTSTATUS
+PciEnableMsiInterrupts(
+    IN PDEVICE_OBJECT PhysicalDeviceObject,
+    IN ULONG Vector,
+    IN PKSERVICE_ROUTINE ServiceRoutine,
+    IN PVOID ServiceContext,
+    OUT PKINTERRUPT *InterruptObject);
+
+VOID
+PciDisableMsiInterrupts(
+    IN PKINTERRUPT InterruptObject);
+
+BOOLEAN
+PciIsPciExpressDevice(
+    IN PDEVICE_OBJECT PhysicalDeviceObject);
+
+NTSTATUS
+PciGetPciExpressCapabilities(
+    IN PDEVICE_OBJECT PhysicalDeviceObject,
+    OUT PUSHORT Capabilities,
+    OUT PUCHAR DeviceType);
+
+NTSTATUS
+PciReadExtendedConfig(
+    IN PDEVICE_OBJECT PhysicalDeviceObject,
+    IN ULONG Offset,
+    OUT PVOID Buffer,
+    IN ULONG Length);
+
+NTSTATUS
+PciWriteExtendedConfig(
+    IN PDEVICE_OBJECT PhysicalDeviceObject,
+    IN ULONG Offset,
+    IN PVOID Buffer,
+    IN ULONG Length);
 
 
 CODE_SEG("INIT")

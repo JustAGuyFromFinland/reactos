@@ -13,6 +13,17 @@
 #define NDEBUG
 #include <debug.h>
 
+/* PROTOTYPES ***************************************************************/
+
+NTSTATUS
+NTAPI
+IopConnectInterruptMessageBased(
+    _Inout_ PIO_CONNECT_INTERRUPT_PARAMETERS Parameters);
+
+VOID
+NTAPI
+IopInitializeMsiSupport(VOID);
+
 /* FUNCTIONS *****************************************************************/
 
 /*
@@ -209,14 +220,13 @@ IoConnectInterruptEx(
             //TODO: We don't do anything for the group type
             return IopConnectInterruptExFullySpecific(Parameters);
         case CONNECT_MESSAGE_BASED:
-            DPRINT1("FIXME: Message based interrupts are UNIMPLEMENTED\n");
-            break;
+            return IopConnectInterruptMessageBased(Parameters);
         case CONNECT_LINE_BASED:
             DPRINT1("FIXME: Line based interrupts are UNIMPLEMENTED\n");
             break;
     }
 
-    return STATUS_SUCCESS;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 VOID

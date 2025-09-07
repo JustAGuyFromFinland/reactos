@@ -340,3 +340,17 @@ typedef struct _PTE
     ULONG StartingSector;
     ULONG PartitionLength;
 } PTE, *PPTE;
+
+NTSTATUS
+NTAPI
+HalpEnablePciMsi(
+    IN ULONG BusNumber,
+    IN ULONG SlotNumber,
+    IN ULONG MessageCount,
+    OUT PULONG Vectors);
+
+VOID
+NTAPI
+HalpDisablePciMsi(
+    IN ULONG BusNumber,
+    IN ULONG SlotNumber);

@@ -143,6 +143,7 @@ list(APPEND SOURCE
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/iowork.c
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/irp.c
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/irq.c
+    ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/msii.c
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/ramdisk.c
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/rawfs.c
     ${REACTOS_SOURCE_DIR}/ntoskrnl/io/iomgr/remlock.c

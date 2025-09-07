@@ -9,6 +9,7 @@ list(APPEND HAL_GENERIC_SOURCE
     generic/kdpci.c
     generic/memory.c
     generic/misc.c
+    generic/msi.c
     generic/nmi.c
     generic/pic.c
     generic/reboot.c
