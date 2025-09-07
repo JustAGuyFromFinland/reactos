@@ -15,6 +15,9 @@ AcpiDeviceNotificationHandler(
   PPDO_DEVICE_DATA DeviceData = (PPDO_DEVICE_DATA)Context;
   PLIST_ENTRY Entry;
   PACPI_NOTIFICATION_HANDLER_ENTRY HandlerEntry;
+  PACPI_NOTIFICATION_HANDLER_ENTRY *HandlersArray = NULL;
+  ULONG HandlerCount = 0;
+  ULONG i;
   KIRQL OldIrql;
 
   if (!DeviceData)
@@ -22,28 +25,56 @@ AcpiDeviceNotificationHandler(
     return;
   }
 
-  /* Call all registered notification handlers */
+  /* First pass: count handlers and allocate array */
   KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
   
   Entry = DeviceData->NotificationHandlers.Flink;
   while (Entry != &DeviceData->NotificationHandlers)
   {
-    HandlerEntry = CONTAINING_RECORD(Entry, ACPI_NOTIFICATION_HANDLER_ENTRY, ListEntry);
-    
-    /* Get next entry before calling handler (in case handler modifies list) */
+    HandlerCount++;
     Entry = Entry->Flink;
-    
-    /* Release spinlock before calling handler to avoid holding it too long */
+  }
+  
+  if (HandlerCount == 0)
+  {
     KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
-    
-    /* Call the handler */
-    HandlerEntry->NotificationHandler(HandlerEntry->NotificationContext, NotifyValue);
-    
-    /* Reacquire for next iteration */
-    KeAcquireSpinLock(&DeviceData->NotificationLock, &OldIrql);
+    return;
+  }
+
+  /* Allocate array for handlers (using NonPagedPool since we're at DISPATCH_LEVEL) */
+  HandlersArray = ExAllocatePoolWithTag(NonPagedPool, 
+                                        HandlerCount * sizeof(PACPI_NOTIFICATION_HANDLER_ENTRY), 
+                                        'AcpH');
+  if (!HandlersArray)
+  {
+    KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+    return;
+  }
+
+  /* Second pass: copy handler pointers to array */
+  i = 0;
+  Entry = DeviceData->NotificationHandlers.Flink;
+  while (Entry != &DeviceData->NotificationHandlers && i < HandlerCount)
+  {
+    HandlerEntry = CONTAINING_RECORD(Entry, ACPI_NOTIFICATION_HANDLER_ENTRY, ListEntry);
+    HandlersArray[i] = HandlerEntry;
+    i++;
+    Entry = Entry->Flink;
   }
   
   KeReleaseSpinLock(&DeviceData->NotificationLock, OldIrql);
+
+  /* Call handlers outside the spinlock */
+  for (i = 0; i < HandlerCount; i++)
+  {
+    if (HandlersArray[i] && HandlersArray[i]->NotificationHandler)
+    {
+      HandlersArray[i]->NotificationHandler(HandlersArray[i]->NotificationContext, NotifyValue);
+    }
+  }
+  
+  /* Free the temporary array */
+  ExFreePoolWithTag(HandlersArray, 'AcpH');
 }
 
 VOID
