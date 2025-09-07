@@ -24,6 +24,7 @@ FADT HalpFixedAcpiDescTable;
 PDEBUG_PORT_TABLE HalpDebugPortTable;
 PACPI_SRAT HalpAcpiSrat;
 PBOOT_TABLE HalpSimpleBootFlagTable;
+UCHAR HalpBootFlags;
 
 PHYSICAL_ADDRESS HalpMaxHotPlugMemoryAddress;
 PHYSICAL_ADDRESS HalpLowStubPhysicalAddress;
@@ -517,6 +518,19 @@ HalpAcpiDetectMachineSpecificActions(IN PLOADER_PARAMETER_BLOCK LoaderBlock,
 
 VOID
 NTAPI
+HalpEndOfBoot(VOID)
+{
+    /* If we have a valid boot table, update the boot register */
+    if (HalpSimpleBootFlagTable)
+    {
+        /* Write back the boot flags to CMOS (may be modified during boot) */
+        HalpWriteCmos(HalpSimpleBootFlagTable->CMOSIndex, HalpBootFlags);
+        DPRINT1("ACPI Boot table: Updated boot register to 0x%02x\n", HalpBootFlags);
+    }
+}
+
+VOID
+NTAPI
 HalpInitBootTable(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     PBOOT_TABLE BootTable;
@@ -530,16 +544,19 @@ HalpInitBootTable(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
         (BootTable->Header.Length >= sizeof(BOOT_TABLE)) &&
         (BootTable->CMOSIndex >= 9))
     {
-        DPRINT1("ACPI Boot table found, but not supported!\n");
+        /* Read the boot register from CMOS */
+        HalpBootFlags = HalpReadCmos(BootTable->CMOSIndex);
+        DPRINT1("ACPI Boot table found, boot flags: 0x%02x\n", HalpBootFlags);
     }
     else
     {
-        /* Invalid or doesn't exist, ignore it */
+        /* Invalid or doesn't exist, set default flags */
         HalpSimpleBootFlagTable = 0;
+        HalpBootFlags = 0;
     }
 
     /* Install the end of boot handler */
-//    HalEndOfBoot = HalpEndOfBoot;
+    HalEndOfBoot = HalpEndOfBoot;
 }
 
 NTSTATUS
