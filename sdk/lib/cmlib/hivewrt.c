@@ -570,8 +570,52 @@ CMAPI
 HvHiveWillShrink(
     _In_ PHHIVE RegistryHive)
 {
-    /* No shrinking yet */
-    UNIMPLEMENTED_ONCE;
+    ULONG i;
+    ULONG FreeBytes = 0;
+    ULONG FreeBlocks;
+    ULONG HiveBlocks;
+    HCELL_INDEX FreeIndex, NextIndex;
+    PHCELL CellHeader;
+    PVOID CellData;
+
+    /* Conservative checks */
+    if (!RegistryHive) return FALSE;
+    if (RegistryHive->Flat) return FALSE;
+    if (RegistryHive->ReadOnly) return FALSE;
+
+    /* Nothing to do for very small hives */
+    HiveBlocks = RegistryHive->Storage[Stable].Length;
+    if (HiveBlocks <= 4) return FALSE;
+
+    /* Walk the free-display lists and sum free bytes */
+    for (i = 0; i < 24; i++)
+    {
+        FreeIndex = RegistryHive->Storage[Stable].FreeDisplay[i];
+        while (FreeIndex != HCELL_NIL)
+        {
+            /* Get the free cell header (HvGetCell returns pointer to data) */
+            CellData = HvGetCell(RegistryHive, FreeIndex);
+            if (!CellData) break;
+            CellHeader = (PHCELL)CellData - 1;
+
+            /* Add up the free size (cell header Size field holds the full size)
+             * and move to the next free in the chain. */
+            FreeBytes += (ULONG)CellHeader->Size;
+            NextIndex = *((PHCELL_INDEX)(CellHeader + 1));
+
+            HvReleaseCell(RegistryHive, FreeIndex);
+            FreeIndex = NextIndex;
+        }
+    }
+
+    /* Convert free bytes to blocks and apply a simple heuristic:
+     * If free blocks are at least 25% of the hive and at least 2 blocks,
+     * claim the hive will shrink. This is conservative and avoids
+     * premature shrinking decisions. */
+    FreeBlocks = FreeBytes / HBLOCK_SIZE;
+    if (FreeBlocks >= 2 && FreeBlocks * 4 >= HiveBlocks)
+        return TRUE;
+
     return FALSE;
 }
 
