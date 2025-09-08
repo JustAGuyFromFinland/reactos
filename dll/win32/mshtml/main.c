@@ -360,8 +360,17 @@ DWORD WINAPI RNIGetCompatibleVersion(void)
  */
 HRESULT WINAPI DllInstall(BOOL bInstall, LPCWSTR cmdline)
 {
-    FIXME("stub %d %s: returning S_OK\n", bInstall, debugstr_w(cmdline));
-    return S_OK;
+    HRESULT hres;
+
+    TRACE("(%s, %s)\n", bInstall ? "TRUE" : "FALSE", debugstr_w(cmdline));
+
+    /* Perform registration or unregistration depending on bInstall. */
+    if (bInstall)
+        hres = DllRegisterServer();
+    else
+        hres = DllUnregisterServer();
+
+    return hres;
 }
 
 /***********************************************************************
