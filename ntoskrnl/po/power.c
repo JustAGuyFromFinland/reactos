@@ -910,6 +910,47 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
             break;
         }
 
+        case PlatformInformation:
+        {
+            PPOWER_PLATFORM_INFORMATION PlatformInfo = (PPOWER_PLATFORM_INFORMATION)OutputBuffer;
+
+            if (InputBuffer != NULL)
+                return STATUS_INVALID_PARAMETER;
+            if (OutputBufferLength < sizeof(POWER_PLATFORM_INFORMATION))
+                return STATUS_BUFFER_TOO_SMALL;
+
+            _SEH2_TRY
+            {
+                RtlZeroMemory(PlatformInfo, sizeof(*PlatformInfo));
+
+                /* Query the HAL for platform capabilities. If the HAL provides
+                 * HalPlatformInformation, use it to set AoAc; otherwise leave
+                 * AoAc as FALSE. */
+                {
+                    ULONG ReturnedLength = 0;
+                    NTSTATUS halStatus;
+
+                    halStatus = HalQuerySystemInformation(HalPlatformInformation,
+                                                          sizeof(*PlatformInfo),
+                                                          PlatformInfo,
+                                                          &ReturnedLength);
+                    if (!NT_SUCCESS(halStatus) || ReturnedLength < sizeof(*PlatformInfo))
+                    {
+                        PlatformInfo->AoAc = FALSE;
+                    }
+                }
+
+                Status = STATUS_SUCCESS;
+            }
+            _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                Status = _SEH2_GetExceptionCode();
+            }
+            _SEH2_END;
+
+            break;
+        }
+
         default:
             Status = STATUS_NOT_IMPLEMENTED;
             DPRINT1("PowerInformationLevel 0x%x is UNIMPLEMENTED! Have a nice day.\n",
