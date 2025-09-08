@@ -21,9 +21,11 @@ HaliQuerySystemInformation(IN HAL_QUERY_INFORMATION_CLASS InformationClass,
                            IN OUT PVOID Buffer,
                            OUT PULONG ReturnedLength)
 {
-	UNIMPLEMENTED;
-    while (TRUE);
-	return STATUS_NOT_IMPLEMENTED;
+    /* No ARM-specific info classes implemented yet.
+     * Return STATUS_NOT_IMPLEMENTED without hitting UNIMPLEMENTED or looping. */
+    if (ReturnedLength)
+        *ReturnedLength = 0;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS
@@ -32,8 +34,7 @@ HaliSetSystemInformation(IN HAL_SET_INFORMATION_CLASS InformationClass,
                          IN ULONG BufferSize,
                          IN OUT PVOID Buffer)
 {
-    UNIMPLEMENTED;
-    while (TRUE);
+    /* No ARM-specific set-info implemented. Return a standard not-implemented status. */
     return STATUS_NOT_IMPLEMENTED;
 }
 

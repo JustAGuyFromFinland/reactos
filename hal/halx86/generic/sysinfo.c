@@ -64,7 +64,24 @@ HaliQuerySystemInformation(IN HAL_QUERY_INFORMATION_CLASS InformationClass,
         REPORT_THIS_CASE(HalProfileSourceInformation);
         REPORT_THIS_CASE(HalInformationClassUnused1);
         REPORT_THIS_CASE(HalPowerInformation);
-        REPORT_THIS_CASE(HalProcessorSpeedInformation);
+        case HalProcessorSpeedInformation:
+        {
+            ULONG Size = sizeof(HAL_PROCESSOR_SPEED_INFORMATION);
+            NTSTATUS Status = STATUS_INFO_LENGTH_MISMATCH;
+
+            if (BufferSize >= Size)
+            {
+                HAL_PROCESSOR_SPEED_INFORMATION *PSI = (HAL_PROCESSOR_SPEED_INFORMATION *)Buffer;
+                PSI->ProcessorSpeed = KeGetCurrentPrcb()->MHz;
+                Status = STATUS_SUCCESS;
+            }
+
+            if (ReturnedLength)
+                *ReturnedLength = Size;
+
+            KeFlushWriteBuffer();
+            return Status;
+        }
         REPORT_THIS_CASE(HalCallbackInformation);
         REPORT_THIS_CASE(HalMapRegisterInformation);
         REPORT_THIS_CASE(HalMcaLogInformation);
@@ -74,7 +91,25 @@ HaliQuerySystemInformation(IN HAL_QUERY_INFORMATION_CLASS InformationClass,
             return STATUS_NOT_IMPLEMENTED;
         }
         REPORT_THIS_CASE(HalDisplayBiosInformation);
-        REPORT_THIS_CASE(HalProcessorFeatureInformation);
+        case HalProcessorFeatureInformation:
+        {
+            ULONG Size = sizeof(HAL_PROCESSOR_FEATURE);
+            NTSTATUS Status = STATUS_INFO_LENGTH_MISMATCH;
+
+            if (BufferSize >= Size)
+            {
+                HAL_PROCESSOR_FEATURE *PF = (HAL_PROCESSOR_FEATURE *)Buffer;
+                /* Use the PRCB feature bits (low 32-bit) as usable feature bits */
+                PF->UsableFeatureBits = (ULONG)KeGetCurrentPrcb()->FeatureBits;
+                Status = STATUS_SUCCESS;
+            }
+
+            if (ReturnedLength)
+                *ReturnedLength = Size;
+
+            KeFlushWriteBuffer();
+            return Status;
+        }
         REPORT_THIS_CASE(HalNumaTopologyInterface);
         REPORT_THIS_CASE(HalErrorInformation);
         REPORT_THIS_CASE(HalCmcLogInformation);
@@ -101,7 +136,27 @@ HaliQuerySystemInformation(IN HAL_QUERY_INFORMATION_CLASS InformationClass,
         REPORT_THIS_CASE(HalPlatformInformation);
         REPORT_THIS_CASE(HalQueryProfileSourceList);
         REPORT_THIS_CASE(HalInitLogInformation);
-        REPORT_THIS_CASE(HalFrequencyInformation);
+        case HalFrequencyInformation:
+        {
+            ULONG Size = sizeof(LARGE_INTEGER);
+            NTSTATUS Status = STATUS_INFO_LENGTH_MISMATCH;
+            LARGE_INTEGER Frequency;
+
+            /* Query the performance-counter frequency */
+            KeQueryPerformanceCounter(&Frequency);
+
+            if (BufferSize >= Size)
+            {
+                RtlCopyMemory(Buffer, &Frequency, Size);
+                Status = STATUS_SUCCESS;
+            }
+
+            if (ReturnedLength)
+                *ReturnedLength = Size;
+
+            KeFlushWriteBuffer();
+            return Status;
+        }
         REPORT_THIS_CASE(HalProcessorBrandString);
         REPORT_THIS_CASE(HalHypervisorInformation);
         REPORT_THIS_CASE(HalPlatformTimerInformation);
@@ -109,7 +164,10 @@ HaliQuerySystemInformation(IN HAL_QUERY_INFORMATION_CLASS InformationClass,
     }
 #undef REPORT_THIS_CASE
 
-    UNIMPLEMENTED;
+    /* No explicit handler for this InformationClass. Return an error
+     * without triggering the UNIMPLEMENTED warning. */
+    if (ReturnedLength)
+        *ReturnedLength = 0;
     return STATUS_NOT_IMPLEMENTED;
 }
 
@@ -119,6 +177,6 @@ HaliSetSystemInformation(IN HAL_SET_INFORMATION_CLASS InformationClass,
                          IN ULONG BufferSize,
                          IN OUT PVOID Buffer)
 {
-    UNIMPLEMENTED;
+    /* No set-info handlers implemented in this HAL. */
     return STATUS_NOT_IMPLEMENTED;
 }
