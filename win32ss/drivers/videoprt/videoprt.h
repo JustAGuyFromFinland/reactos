@@ -125,6 +125,7 @@ typedef struct _VIDEO_PORT_CHILD_EXTENSION
 
     PDRIVER_OBJECT DriverObject;
     PDEVICE_OBJECT PhysicalDeviceObject;
+   struct _VIDEO_PORT_DEVICE_EXTENSTION *ParentDeviceExtension;
 
     LIST_ENTRY ListEntry;
 

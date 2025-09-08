@@ -443,6 +443,16 @@ IntVideoPortDispatchPdoPnp(
             break;
 
         case IRP_MN_REMOVE_DEVICE:
+            /* Remove this child from parent's list (if linked) to avoid dangling entries */
+            if (DeviceObject->DeviceExtension)
+            {
+                PVIDEO_PORT_CHILD_EXTENSION ChildExt = DeviceObject->DeviceExtension;
+                if (ChildExt->ParentDeviceExtension)
+                {
+                    RemoveEntryList(&ChildExt->ListEntry);
+                    ChildExt->ParentDeviceExtension = NULL;
+                }
+            }
             Irp->IoStatus.Status = STATUS_SUCCESS;
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             IoDeleteDevice(DeviceObject);

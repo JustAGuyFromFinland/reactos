@@ -1305,14 +1305,144 @@ IntVideoPortEnumerateChildren(
 
     if (!IsListEmpty(&DeviceExtension->ChildDeviceList))
     {
-        ERR_(VIDEOPRT, "FIXME: Support calling VideoPortEnumerateChildren again!\n");
-        return STATUS_SUCCESS;
+        INFO_(VIDEOPRT, "Re-enumeration requested: existing child devices will be preserved and reused when possible\n");
+        /* Do not delete existing PDOs here. During re-enumeration we will
+         * try to match newly reported children against existing ones (by
+         * ChildId and for monitors by EDID). If a match is found we will
+         * reuse the existing PDO and discard the temporary device object
+         * created for probing. This avoids racing with PnP manager which
+         * expects to manage PDO lifetimes itself. */
     }
 
     /* Enumerate the children */
     for (i = 1; ; i++)
     {
-        Status = IoCreateDevice(DeviceExtension->DriverObject,
+        UCHAR LocalChildDescriptor[sizeof(((PVIDEO_PORT_CHILD_EXTENSION)0)->ChildDescriptor)];
+        UCHAR *pLocalChildHwExt = NULL;
+        ULONG LocalChildId = i;
+        VIDEO_CHILD_TYPE LocalChildType = Other;
+
+        /* Prepare ChildEnumInfo to probe into temporary buffers */
+        ChildEnumInfo.Size = sizeof(ChildEnumInfo);
+        ChildEnumInfo.ChildDescriptorSize = sizeof(LocalChildDescriptor);
+        ChildEnumInfo.ACPIHwId = 0;
+
+        if (DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize)
+        {
+            pLocalChildHwExt = ExAllocatePoolZero(PagedPool,
+                        DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize,
+                        TAG_VIDEO_PORT);
+            ChildEnumInfo.ChildHwDeviceExtension = pLocalChildHwExt;
+        }
+        else
+        {
+            ChildEnumInfo.ChildHwDeviceExtension = NULL;
+        }
+
+        ChildEnumInfo.ChildIndex = LocalChildId;
+
+        INFO_(VIDEOPRT, "Probing child: %d\n", ChildEnumInfo.ChildIndex);
+        Status = DeviceExtension->DriverExtension->InitializationData.HwGetVideoChildDescriptor(
+                     DeviceExtension->MiniPortDeviceExtension,
+                     &ChildEnumInfo,
+                     &LocalChildType,
+                     LocalChildDescriptor,
+                     &LocalChildId,
+                     &Unused);
+    if (Status == VIDEO_ENUM_MORE_DEVICES)
+        {
+            if (LocalChildType == Monitor)
+            {
+                // Check if the EDID is valid
+                if (LocalChildDescriptor[0] == 0x00 &&
+                        LocalChildDescriptor[1] == 0xFF &&
+                        LocalChildDescriptor[2] == 0xFF &&
+                        LocalChildDescriptor[3] == 0xFF &&
+                        LocalChildDescriptor[4] == 0xFF &&
+                        LocalChildDescriptor[5] == 0xFF &&
+                        LocalChildDescriptor[6] == 0xFF &&
+                        LocalChildDescriptor[7] == 0x00)
+                {
+                    if (bHaveLastMonitorID)
+                    {
+                        // Compare the previous monitor ID with the current one, break the loop if they are identical
+                        if (RtlCompareMemory(LastMonitorID, &LocalChildDescriptor[8], sizeof(LastMonitorID)) == sizeof(LastMonitorID))
+                        {
+                            INFO_(VIDEOPRT, "Found identical Monitor ID two times, stopping enumeration\n");
+                            if (pLocalChildHwExt) ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
+                            break;
+                        }
+                    }
+
+                    // Copy 10 bytes from the EDID, which can be used to uniquely identify the monitor
+                    RtlCopyMemory(LastMonitorID, &LocalChildDescriptor[8], sizeof(LastMonitorID));
+                    bHaveLastMonitorID = TRUE;
+
+                    /* Mark it valid */
+                    /* we'll set EdidValid when we create the PDO */
+                }
+                else
+                {
+                    /* Mark it invalid */
+                    /* handled later */
+                }
+                /* If we are re-enumerating, try to find an existing child with
+                 * the same ChildId or identical EDID. If found, update its
+                 * descriptor and drop the temporary device we just created. */
+                if (!IsListEmpty(&DeviceExtension->ChildDeviceList))
+                {
+                    PLIST_ENTRY Cur = DeviceExtension->ChildDeviceList.Flink;
+                    PVIDEO_PORT_CHILD_EXTENSION Exist = NULL;
+
+                    for (; Cur != &DeviceExtension->ChildDeviceList; Cur = Cur->Flink)
+                    {
+                        PVIDEO_PORT_CHILD_EXTENSION Tmp = CONTAINING_RECORD(Cur, VIDEO_PORT_CHILD_EXTENSION, ListEntry);
+
+                        if (Tmp->ChildId == LocalChildId)
+                        {
+                            Exist = Tmp;
+                            break;
+                        }
+
+                        /* For monitors with valid EDID, compare the 10-byte
+                         * monitor ID at offset 8. */
+                        if (LocalChildType == Monitor /* && Local EDID validity checked below */ && Tmp->EdidValid)
+                        {
+                            if (RtlCompareMemory(&Tmp->ChildDescriptor[8], &LocalChildDescriptor[8], sizeof(LastMonitorID)) == sizeof(LastMonitorID))
+                            {
+                                Exist = Tmp;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (Exist)
+                    {
+                        INFO_(VIDEOPRT, "Found existing child (ChildId=%lu), reusing PDO %p\n", Exist->ChildId, Exist->PhysicalDeviceObject);
+
+                        /* Update descriptor/capabilities if needed */
+                        RtlCopyMemory(Exist->ChildDescriptor, LocalChildDescriptor, sizeof(Exist->ChildDescriptor));
+                        Exist->ChildType = LocalChildType;
+                        /* Update EDID validity if applicable */
+                        if (LocalChildType == Monitor && LocalChildDescriptor[0] == 0x00 && LocalChildDescriptor[7] == 0x00)
+                            Exist->EdidValid = TRUE;
+                        else
+                            Exist->EdidValid = FALSE;
+
+                        if (pLocalChildHwExt)
+                        {
+                            /* If the miniport provided child hw ext data, copy it into the existing child's extension if size matches */
+                            RtlCopyMemory(VIDEO_PORT_GET_CHILD_EXTENSION(Exist), pLocalChildHwExt,
+                                          DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize);
+                            ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
+                        }
+
+                        /* We probed into temporary buffers, no ChildDeviceObject was created yet, so just continue */
+                        continue;
+                    }
+                }
+                /* No existing child matched; create a new PDO */
+                Status = IoCreateDevice(DeviceExtension->DriverObject,
                                 sizeof(VIDEO_PORT_CHILD_EXTENSION) +
                                 DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize,
                                 NULL,
@@ -1320,95 +1450,56 @@ IntVideoPortEnumerateChildren(
                                 FILE_DEVICE_SECURE_OPEN,
                                 FALSE,
                                 &ChildDeviceObject);
-        if (!NT_SUCCESS(Status))
-            return Status;
+                if (!NT_SUCCESS(Status))
+                {
+                    if (pLocalChildHwExt) ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
+                    return Status;
+                }
 
-        ChildExtension = ChildDeviceObject->DeviceExtension;
-
-        RtlZeroMemory(ChildExtension,
+                ChildExtension = ChildDeviceObject->DeviceExtension;
+                RtlZeroMemory(ChildExtension,
                       sizeof(VIDEO_PORT_CHILD_EXTENSION) +
                         DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize);
 
-        ChildExtension->Common.Fdo = FALSE;
-        ChildExtension->ChildId = i;
-        ChildExtension->PhysicalDeviceObject = ChildDeviceObject;
-        ChildExtension->DriverObject = DeviceExtension->DriverObject;
+                ChildExtension->Common.Fdo = FALSE;
+                ChildExtension->ChildId = LocalChildId;
+                ChildExtension->PhysicalDeviceObject = ChildDeviceObject;
+                ChildExtension->DriverObject = DeviceExtension->DriverObject;
+                ChildExtension->ParentDeviceExtension = DeviceExtension;
 
-        /* Setup the ChildEnumInfo */
-        ChildEnumInfo.Size = sizeof(ChildEnumInfo);
-        ChildEnumInfo.ChildDescriptorSize = sizeof(ChildExtension->ChildDescriptor);
-        ChildEnumInfo.ACPIHwId = 0;
-
-        if (DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize)
-            ChildEnumInfo.ChildHwDeviceExtension = VIDEO_PORT_GET_CHILD_EXTENSION(ChildExtension);
-        else
-            ChildEnumInfo.ChildHwDeviceExtension = NULL;
-
-        ChildEnumInfo.ChildIndex = ChildExtension->ChildId;
-
-        INFO_(VIDEOPRT, "Probing child: %d\n", ChildEnumInfo.ChildIndex);
-        Status = DeviceExtension->DriverExtension->InitializationData.HwGetVideoChildDescriptor(
-                     DeviceExtension->MiniPortDeviceExtension,
-                     &ChildEnumInfo,
-                     &ChildExtension->ChildType,
-                     ChildExtension->ChildDescriptor,
-                     &ChildExtension->ChildId,
-                     &Unused);
-        if (Status == VIDEO_ENUM_MORE_DEVICES)
-        {
-            if (ChildExtension->ChildType == Monitor)
-            {
-                // Check if the EDID is valid
-                if (ChildExtension->ChildDescriptor[0] == 0x00 &&
-                        ChildExtension->ChildDescriptor[1] == 0xFF &&
-                        ChildExtension->ChildDescriptor[2] == 0xFF &&
-                        ChildExtension->ChildDescriptor[3] == 0xFF &&
-                        ChildExtension->ChildDescriptor[4] == 0xFF &&
-                        ChildExtension->ChildDescriptor[5] == 0xFF &&
-                        ChildExtension->ChildDescriptor[6] == 0xFF &&
-                        ChildExtension->ChildDescriptor[7] == 0x00)
-                {
-                    if (bHaveLastMonitorID)
-                    {
-                        // Compare the previous monitor ID with the current one, break the loop if they are identical
-                        if (RtlCompareMemory(LastMonitorID, &ChildExtension->ChildDescriptor[8], sizeof(LastMonitorID)) == sizeof(LastMonitorID))
-                        {
-                            INFO_(VIDEOPRT, "Found identical Monitor ID two times, stopping enumeration\n");
-                            IoDeleteDevice(ChildDeviceObject);
-                            break;
-                        }
-                    }
-
-                    // Copy 10 bytes from the EDID, which can be used to uniquely identify the monitor
-                    RtlCopyMemory(LastMonitorID, &ChildExtension->ChildDescriptor[8], sizeof(LastMonitorID));
-                    bHaveLastMonitorID = TRUE;
-
-                    /* Mark it valid */
+                /* Copy descriptor and hw ext into the device extension */
+                RtlCopyMemory(ChildExtension->ChildDescriptor, LocalChildDescriptor, sizeof(ChildExtension->ChildDescriptor));
+                ChildExtension->ChildType = LocalChildType;
+                if (LocalChildType == Monitor && LocalChildDescriptor[0] == 0x00 && LocalChildDescriptor[7] == 0x00)
                     ChildExtension->EdidValid = TRUE;
-                }
                 else
-                {
-                    /* Mark it invalid */
                     ChildExtension->EdidValid = FALSE;
+
+                if (pLocalChildHwExt)
+                {
+                    RtlCopyMemory(VIDEO_PORT_GET_CHILD_EXTENSION(ChildExtension), pLocalChildHwExt,
+                                  DeviceExtension->DriverExtension->InitializationData.HwChildDeviceExtensionSize);
+                    ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
                 }
             }
         }
         else if (Status == VIDEO_ENUM_INVALID_DEVICE)
         {
             WARN_(VIDEOPRT, "Child device %d is invalid!\n", ChildEnumInfo.ChildIndex);
-            IoDeleteDevice(ChildDeviceObject);
+            if (pLocalChildHwExt) ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
+            /* Do not create a PDO for invalid device */
             continue;
         }
         else if (Status == VIDEO_ENUM_NO_MORE_DEVICES)
         {
             INFO_(VIDEOPRT, "End of child enumeration! (%d children enumerated)\n", i - 1);
-            IoDeleteDevice(ChildDeviceObject);
+            if (pLocalChildHwExt) ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
             break;
         }
         else
         {
             WARN_(VIDEOPRT, "HwGetVideoChildDescriptor returned unknown status code 0x%x!\n", Status);
-            IoDeleteDevice(ChildDeviceObject);
+            if (pLocalChildHwExt) ExFreePoolWithTag(pLocalChildHwExt, TAG_VIDEO_PORT);
             break;
         }
 
